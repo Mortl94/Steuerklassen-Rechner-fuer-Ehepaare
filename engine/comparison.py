@@ -1,0 +1,309 @@
+"""Vergleich aller Steuerklassen-Kombinationen und Jahresausgleich."""
+
+from typing import Optional
+from .parameters import TaxYearParams, get_params
+from .models import (
+    HouseholdInput, MonthlyResult, SteuerklasseResult, ComparisonResult,
+)
+from .tax import (
+    calc_est_splitting, calc_est_splitting_with_progressionsvorbehalt,
+    calc_soli, calc_kirchensteuer,
+)
+from .social import calc_social_contributions
+from .payroll import calc_monthly_netto, calc_faktor, calc_vorsorgepauschale
+
+
+def _compute_annual_declaration(
+    household: HouseholdInput,
+    params: TaxYearParams,
+) -> dict:
+    """Tatsächliche Jahres-ESt via Einkommensteuererklärung (Splittingtabelle).
+
+    Dies ist UNABHÄNGIG von der Steuerklasse — immer das gleiche Ergebnis.
+
+    Returns:
+        Dict mit annual_est, annual_soli, annual_kist, combined_zve,
+        kindergeld_annual, kinderfreibetrag_vorteil.
+    """
+    p1 = household.partner1
+    p2 = household.partner2
+
+    # Jahresbrutto
+    brutto1 = p1.brutto_annual
+    brutto2 = p2.brutto_annual
+
+    # Weitere Einkünfte
+    brutto1 += p1.weitere_einkuenfte
+    brutto2 += p2.weitere_einkuenfte
+
+    # Werbungskosten
+    wk1 = max(params.werbungskosten_pauschale, params.werbungskosten_pauschale + p1.werbungskosten_ueber_pauschale)
+    wk2 = max(params.werbungskosten_pauschale, params.werbungskosten_pauschale + p2.werbungskosten_ueber_pauschale)
+
+    # Sonderausgaben (Pauschale für Zusammenveranlagung)
+    sa = 2 * params.sonderausgaben_pauschale
+
+    # Vorsorgeaufwendungen (tatsächliche SV-Beiträge * 12)
+    sv1 = calc_social_contributions(
+        p1.brutto_monthly, params, kinder=household.kinder,
+        is_beamter=p1.is_beamter, is_pkv=p1.is_pkv,
+        pkv_monthly=p1.pkv_monthly, kv_zusatzbeitrag=p1.kv_zusatzbeitrag,
+    )
+    sv2 = calc_social_contributions(
+        p2.brutto_monthly, params, kinder=household.kinder,
+        is_beamter=p2.is_beamter, is_pkv=p2.is_pkv,
+        pkv_monthly=p2.pkv_monthly, kv_zusatzbeitrag=p2.kv_zusatzbeitrag,
+    )
+
+    # Bei der Einkommensteuererklärung: RV-Beiträge voll absetzbar (seit 2023)
+    # KV-Basisbeitrag (ohne Krankengeld) + PV absetzbar
+    # Vereinfacht: alle AN-SV-Beiträge als Vorsorge
+    vorsorge1 = sv1.total_an * 12
+    vorsorge2 = sv2.total_an * 12
+
+    # Gemeinsames zvE
+    combined_income = brutto1 + brutto2
+    combined_abzuege = wk1 + wk2 + sa + vorsorge1 + vorsorge2
+    combined_zve = max(0, combined_income - combined_abzuege)
+
+    # Elterngeld (Progressionsvorbehalt)
+    elterngeld_total = (
+        p1.elterngeld_monthly * p1.elterngeld_months
+        + p2.elterngeld_monthly * p2.elterngeld_months
+    )
+
+    # ESt via Splittingtabelle
+    if elterngeld_total > 0:
+        annual_est = calc_est_splitting_with_progressionsvorbehalt(
+            combined_zve, elterngeld_total, params
+        )
+    else:
+        annual_est = calc_est_splitting(combined_zve, params)
+
+    # Günstigerprüfung: Kinderfreibetrag vs. Kindergeld
+    kindergeld_annual = household.kinder * params.kindergeld_per_child_monthly * 12
+    kinderfreibetrag_total = household.kinder * params.kinderfreibetrag_couple
+
+    # Berechne ESt MIT Kinderfreibetrag
+    zve_with_kfb = max(0, combined_zve - kinderfreibetrag_total)
+    if elterngeld_total > 0:
+        est_with_kfb = calc_est_splitting_with_progressionsvorbehalt(
+            zve_with_kfb, elterngeld_total, params
+        )
+    else:
+        est_with_kfb = calc_est_splitting(zve_with_kfb, params)
+
+    # Steuervorteil durch Kinderfreibetrag
+    kfb_steuervorteil = annual_est - est_with_kfb
+
+    # Günstigerprüfung: Wenn Kinderfreibetrag mehr Vorteil bringt als Kindergeld
+    use_kinderfreibetrag = kfb_steuervorteil > kindergeld_annual and household.kinder > 0
+
+    if use_kinderfreibetrag:
+        # Kinderfreibetrag wird angewandt, Kindergeld muss zurückgezahlt werden
+        annual_est = est_with_kfb
+        # Effektiv: Kindergeld wurde schon ausgezahlt, wird gegen KFB verrechnet
+        # In der Steuererklärung: ESt wird um KFB reduziert, aber Kindergeld wird hinzugerechnet
+        # Netto-Vorteil: kfb_steuervorteil - kindergeld_annual
+        kindergeld_annual_effective = kindergeld_annual  # wird trotzdem ausgezahlt
+    else:
+        kindergeld_annual_effective = kindergeld_annual
+
+    # Soli auf finale ESt
+    annual_soli = calc_soli(annual_est, params, is_couple=True)
+
+    # Kirchensteuer
+    annual_kist = 0.0
+    if p1.kirchensteuer:
+        annual_kist += calc_kirchensteuer(annual_est / 2, household.bundesland, params)
+    if p2.kirchensteuer:
+        annual_kist += calc_kirchensteuer(annual_est / 2, household.bundesland, params)
+
+    return {
+        "annual_est": annual_est,
+        "annual_soli": annual_soli,
+        "annual_kist": annual_kist,
+        "combined_zve": combined_zve,
+        "kindergeld_annual": kindergeld_annual_effective,
+        "use_kinderfreibetrag": use_kinderfreibetrag,
+        "kfb_steuervorteil": kfb_steuervorteil,
+    }
+
+
+def _build_steuerklasse_result(
+    combo_label: str,
+    sk1: int,
+    sk2: int,
+    household: HouseholdInput,
+    params: TaxYearParams,
+    declaration: dict,
+    faktor: Optional[float] = None,
+) -> SteuerklasseResult:
+    """Ergebnis für eine Steuerklassen-Kombination erstellen."""
+    p1 = household.partner1
+    p2 = household.partner2
+
+    common = dict(
+        bundesland=household.bundesland,
+        kinder=household.kinder,
+    )
+
+    # Monatliches Netto pro Partner
+    monthly_p1 = calc_monthly_netto(
+        p1.brutto_monthly, sk1, params,
+        kirchensteuer=p1.kirchensteuer,
+        is_beamter=p1.is_beamter, is_pkv=p1.is_pkv,
+        pkv_monthly=p1.pkv_monthly, kv_zusatzbeitrag=p1.kv_zusatzbeitrag,
+        faktor=faktor if sk1 == 4 and faktor else None,
+        **common,
+    )
+    monthly_p2 = calc_monthly_netto(
+        p2.brutto_monthly, sk2, params,
+        kirchensteuer=p2.kirchensteuer,
+        is_beamter=p2.is_beamter, is_pkv=p2.is_pkv,
+        pkv_monthly=p2.pkv_monthly, kv_zusatzbeitrag=p2.kv_zusatzbeitrag,
+        faktor=faktor if sk2 == 4 and faktor else None,
+        **common,
+    )
+
+    hh_monthly = round(monthly_p1.netto + monthly_p2.netto, 2)
+    hh_annual = round(hh_monthly * 12, 2)
+
+    # Jährlich einbehalten (LSt + Soli + KiSt)
+    withheld_p1 = (monthly_p1.lohnsteuer + monthly_p1.soli + monthly_p1.kirchensteuer) * 12
+    withheld_p2 = (monthly_p2.lohnsteuer + monthly_p2.soli + monthly_p2.kirchensteuer) * 12
+    total_withheld = round(withheld_p1 + withheld_p2, 2)
+
+    # Tatsächliche Jahressteuer (gleich für alle Kombis)
+    actual_tax = declaration["annual_est"] + declaration["annual_soli"] + declaration["annual_kist"]
+
+    # Differenz: positiv = Erstattung, negativ = Nachzahlung
+    difference = round(total_withheld - actual_tax, 2)
+
+    return SteuerklasseResult(
+        combo_label=combo_label,
+        steuerklasse_p1=sk1,
+        steuerklasse_p2=sk2,
+        partner1_monthly=monthly_p1,
+        partner2_monthly=monthly_p2,
+        household_monthly_netto=hh_monthly,
+        household_annual_netto=hh_annual,
+        annual_est_splitting=declaration["annual_est"],
+        annual_soli_splitting=declaration["annual_soli"],
+        annual_kist_splitting=declaration["annual_kist"],
+        total_withheld_annual=total_withheld,
+        annual_difference=difference,
+        faktor=faktor,
+    )
+
+
+def compare_steuerklassen(household: HouseholdInput) -> ComparisonResult:
+    """Alle Steuerklassen-Kombinationen vergleichen.
+
+    Berechnet für 3/5, 5/3, 4/4 und 4+Faktor:
+    - Monatliches Netto pro Partner
+    - Jährliche Steuererstattung oder Nachzahlung
+    - Empfehlung
+
+    Args:
+        household: Eingabedaten des Haushalts.
+
+    Returns:
+        ComparisonResult mit allen Ergebnissen.
+    """
+    params = get_params(household.year)
+    p1 = household.partner1
+    p2 = household.partner2
+
+    # Tatsächliche Jahressteuer (gleich für alle Kombis)
+    declaration = _compute_annual_declaration(household, params)
+
+    # Faktor berechnen
+    faktor = calc_faktor(
+        p1.brutto_annual, p2.brutto_annual, params,
+        is_beamter1=p1.is_beamter, is_beamter2=p2.is_beamter,
+        is_pkv1=p1.is_pkv, is_pkv2=p2.is_pkv,
+        pkv_monthly1=p1.pkv_monthly, pkv_monthly2=p2.pkv_monthly,
+        kv_zusatzbeitrag1=p1.kv_zusatzbeitrag, kv_zusatzbeitrag2=p2.kv_zusatzbeitrag,
+        kinder=household.kinder,
+    )
+
+    # Alle Kombinationen berechnen
+    results = []
+
+    # SK 3/5
+    results.append(_build_steuerklasse_result(
+        "3 / 5", 3, 5, household, params, declaration,
+    ))
+
+    # SK 5/3
+    results.append(_build_steuerklasse_result(
+        "5 / 3", 5, 3, household, params, declaration,
+    ))
+
+    # SK 4/4
+    results.append(_build_steuerklasse_result(
+        "4 / 4", 4, 4, household, params, declaration,
+    ))
+
+    # SK 4+Faktor / 4+Faktor
+    results.append(_build_steuerklasse_result(
+        f"4+F / 4+F (F={faktor:.3f})", 4, 4, household, params, declaration,
+        faktor=faktor,
+    ))
+
+    # Empfehlung generieren
+    recommendation = _generate_recommendation(results, declaration)
+
+    return ComparisonResult(
+        household=household,
+        results=results,
+        annual_est_actual=declaration["annual_est"],
+        annual_soli_actual=declaration["annual_soli"],
+        annual_kist_actual=declaration["annual_kist"],
+        kindergeld_annual=declaration["kindergeld_annual"],
+        recommendation=recommendation,
+    )
+
+
+def _generate_recommendation(results: list, declaration: dict) -> str:
+    """Empfehlung basierend auf den Ergebnissen generieren."""
+    # Sortiere nach monatlichem Haushaltsnetto (absteigend)
+    sorted_by_monthly = sorted(results, key=lambda r: r.household_monthly_netto, reverse=True)
+    best_monthly = sorted_by_monthly[0]
+
+    # Finde die Kombination mit der geringsten Nachzahlung / höchsten Erstattung
+    sorted_by_diff = sorted(results, key=lambda r: abs(r.annual_difference))
+    best_balanced = sorted_by_diff[0]
+
+    lines = []
+    lines.append(
+        f"Höchstes monatliches Haushaltsnetto: {best_monthly.combo_label} "
+        f"mit {best_monthly.household_monthly_netto:,.2f} EUR/Monat"
+    )
+
+    if best_monthly.annual_difference < 0:
+        lines.append(
+            f"  Aber: Nachzahlung von {abs(best_monthly.annual_difference):,.2f} EUR "
+            f"bei der Steuererklärung"
+        )
+
+    lines.append(
+        f"Geringste Abweichung zum Jahresausgleich: {best_balanced.combo_label} "
+        f"(Differenz: {best_balanced.annual_difference:+,.2f} EUR)"
+    )
+
+    lines.append("")
+    lines.append(
+        "Wichtig: Die jährliche Steuerlast ist bei allen Steuerklassen-Kombinationen "
+        "identisch. Der Unterschied liegt nur im monatlichen Cashflow. "
+        "Bei der Steuererklärung wird immer der Splittingtarif angewandt."
+    )
+
+    if declaration.get("use_kinderfreibetrag"):
+        lines.append(
+            f"  Kinderfreibetrag ist günstiger als Kindergeld "
+            f"(Vorteil: {declaration['kfb_steuervorteil'] - declaration['kindergeld_annual']:,.2f} EUR)"
+        )
+
+    return "\n".join(lines)
