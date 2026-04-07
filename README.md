@@ -71,12 +71,13 @@ python -m pytest tests/ -v
 
 | Feld | Default | Beschreibung |
 |------|---------|-------------|
-| Anzahl Gehälter | 12 | Wie viele Monatsgehälter pro Jahr (12, 13, 14) — für die Anzeige pro Gehaltsabrechnung |
+| Anzahl Gehälter | 12 | Wie viele Gehaltsabrechnungen pro Jahr (12, 13, 14) — für Brutto, Steuerabzug und Netto pro Gehaltsabrechnung |
 | Kirchensteuer | Nein | Kirchensteuerpflichtig? |
 | Beamter | Nein | Keine RV/AV/GKV/PV-Beiträge |
 | PKV | Nein | Privat krankenversichert + monatlicher Beitrag |
-| Elterngeld | 0 | Monatlicher Betrag + Anzahl Monate |
-| KV-Zusatzbeitrag | Durchschnitt | Individueller Zusatzbeitrag der Krankenkasse |
+| Elterngeld | Kein | Kein / Basis (12 Mo.) / Plus (24 Mo.) |
+| Brutto vor Geburt | 0 | Jahresbrutto VOR der Geburt (nur bei Elterngeld) — Basis für Elterngeld-Berechnung |
+| KV-Zusatzbeitrag | Offizieller Durchschnitt | Individueller Zusatzbeitrag der Krankenkasse; kann vom Durchschnitt abweichen |
 | Weitere Einkünfte | 0 | Jährliche Einkünfte neben Gehalt |
 | Werbungskosten | 0 | Betrag ÜBER der Pauschale von 1.230 EUR |
 | Anzahl Kinder | 0 | Beeinflusst PV-Beitrag, Kindergeld und Kinderfreibetrag |
@@ -147,6 +148,14 @@ Brutto
 = Netto
 ```
 
+Bei mehr als 12 Gehältern wird die Monatsansicht als **Netto pro Gehaltsabrechnung** dargestellt:
+
+- Brutto pro Gehaltsabrechnung = `Jahresbrutto / Anzahl Gehälter`
+- Lohnsteuer, Solidaritätszuschlag und Kirchensteuer werden vereinfacht über die Anzahl der Gehaltsabrechnungen verteilt
+- Die Jahreswerte verwenden weiterhin das tatsächliche Jahresbrutto
+
+Wichtig: Ein 13./14. Gehalt wird in dieser App vereinfacht wie eine reguläre Gehaltsabrechnung behandelt. Die App bildet keine echte Lohnabrechnung für **sonstige Bezüge** wie Weihnachtsgeld, Urlaubsgeld oder Boni nach. In der Praxis kann der Lohnsteuerabzug im Auszahlungsmonat deshalb abweichen; die finale Jahressteuer wird über den Jahresausgleich betrachtet.
+
 ### 5. Zu versteuerndes Einkommen (zvE)
 
 Vom Jahresbrutto werden abgezogen:
@@ -199,13 +208,46 @@ Alle Beiträge werden **50/50 zwischen Arbeitnehmer und Arbeitgeber** geteilt un
 - PV-Beitrag wird trotzdem nach GKV-Regeln berechnet (sofern nicht Beamter)
 
 #### Elterngeld
-- **Steuerfrei**, wird nicht vom Arbeitgeber abgezogen
-- Löst aber den **Progressionsvorbehalt** aus:
+
+Das Elterngeld wird **automatisch** aus dem Jahresbrutto **vor der Geburt** berechnet — ein separates Eingabefeld, unabhängig vom aktuellen Gehalt. So kann z. B. ein Partner aktuell 0 EUR verdienen (Elternzeit) und trotzdem Elterngeld auf Basis des früheren Gehalts erhalten.
+
+**Varianten:**
+
+| Variante | Dauer | Min/Monat | Max/Monat | Ersatzrate |
+|----------|-------|-----------|-----------|------------|
+| Elterngeld Basis | 12 Monate | 300 EUR | 1.800 EUR | 65-67% |
+| Elterngeld Plus | 24 Monate | 150 EUR | 900 EUR | 65-67% |
+
+**Berechnung des Elterngeld-Netto (Bemessungsgrundlage):**
+
+```
+Brutto vor Geburt (monatlich)
+- Werbungskostenpauschale (1/12 von 1.230 EUR)
+= Bemessungs-Brutto
+- Lohnsteuer (immer Steuerklasse 4, unabhängig von gewählter SK)
+- Sozialversicherungsbeiträge (KV, RV, AV, PV)
+= Elterngeld-Netto
+```
+
+**Ersatzrate:**
+
+| Elterngeld-Netto | Ersatzrate |
+|------------------|------------|
+| < 1.000 EUR | 67% + 0,1% pro 2 EUR unter 1.000 (max 100%) |
+| 1.000 - 1.200 EUR | 67% |
+| > 1.200 EUR | 65% |
+
+**Berechnung:**
+- **Basis**: `Ersatzrate × Elterngeld-Netto` (min 300, max 1.800 EUR/Monat)
+- **Plus**: `Ersatzrate × Elterngeld-Netto / 2` (min 150, max 900 EUR/Monat)
+
+**Steuerliche Behandlung:**
+- Elterngeld ist **steuerfrei** und erscheint nicht im monatlichen Netto
+- Es löst aber den **Progressionsvorbehalt** aus:
   1. Fiktives Gesamteinkommen = reguläres Einkommen + Elterngeld
   2. Steuersatz auf fiktives Gesamteinkommen berechnen
-  3. Diesen höheren Satz auf das reguläre Einkommen anwenden
-- **Eingabe**: Brutto/Monat = 0, Elterngeld = Betrag, Monate = Dauer
-- Elterngeld wird separat ausgezahlt und erscheint nicht im monatlichen Netto
+  3. Diesen höheren Steuersatz auf das reguläre Einkommen anwenden
+- Dadurch steigt die Steuerlast auf das verbleibende Einkommen des Haushalts
 
 #### Kindergeld vs. Kinderfreibetrag (Günstigerprüfung)
 - **Kindergeld** (2025: 255 EUR/Kind/Monat, 2026: 259 EUR) wird automatisch ausgezahlt
@@ -248,9 +290,10 @@ Da alle Steuerklassen die gleiche Jahressteuer ergeben, gilt:
 │   ├── tax.py                 # ESt, Soli, Kirchensteuer
 │   ├── social.py              # Sozialversicherungsbeiträge
 │   ├── payroll.py             # Monatl. Lohnsteuer pro Steuerklasse
+│   ├── elterngeld.py          # Elterngeld-Berechnung (Basis + Plus)
 │   └── comparison.py          # SK-Vergleich + Jahresausgleich
 └── tests/
-    └── test_engine.py         # 46 Unit- und Integrationstests
+    └── test_engine.py         # 48 Unit- und Integrationstests
 ```
 
 ### Abhängigkeiten

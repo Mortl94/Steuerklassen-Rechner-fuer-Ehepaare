@@ -226,11 +226,13 @@ def calc_monthly_netto(
     pkv_monthly: float = 0.0,
     kv_zusatzbeitrag: Optional[float] = None,
     faktor: Optional[float] = None,
+    brutto_annual: Optional[float] = None,
+    payroll_periods: int = 12,
 ) -> MonthlyResult:
-    """Monatliches Netto berechnen.
+    """Netto pro Gehaltsabrechnung berechnen.
 
     Args:
-        brutto_monthly: Monatliches Brutto.
+        brutto_monthly: Brutto pro Gehaltsabrechnung.
         steuerklasse: 3, 4 oder 5.
         params: Steuerparameter.
         bundesland: Bundesland (für Kirchensteuer).
@@ -241,11 +243,18 @@ def calc_monthly_netto(
         pkv_monthly: PKV-Monatsbeitrag.
         kv_zusatzbeitrag: Individueller Zusatzbeitrag.
         faktor: Faktor für SK 4+Faktor.
+        brutto_annual: Jahresbrutto (falls abweichend von brutto_monthly * 12,
+            z.B. bei 13./14. Gehalt). Wird für die LSt-Berechnung verwendet.
+        payroll_periods: Anzahl Gehaltsabrechnungen pro Jahr.
 
     Returns:
         MonthlyResult mit allen Abzügen und Netto.
     """
-    brutto_annual = brutto_monthly * 12
+    if payroll_periods <= 0:
+        raise ValueError("payroll_periods muss größer als 0 sein")
+
+    if brutto_annual is None:
+        brutto_annual = brutto_monthly * payroll_periods
 
     # Jährliche Lohnsteuer
     lst_annual = calc_annual_lohnsteuer(
@@ -267,10 +276,10 @@ def calc_monthly_netto(
     if kirchensteuer:
         kist_annual = calc_kirchensteuer(lst_annual, bundesland, params)
 
-    # Monatliche Steuerbeträge
-    lst_monthly = round(lst_annual / 12, 2)
-    soli_monthly = round(soli_annual / 12, 2)
-    kist_monthly = round(kist_annual / 12, 2)
+    # Steuerbeträge pro Gehaltsabrechnung.
+    lst_monthly = round(lst_annual / payroll_periods, 2)
+    soli_monthly = round(soli_annual / payroll_periods, 2)
+    kist_monthly = round(kist_annual / payroll_periods, 2)
 
     # Sozialversicherung
     sv = calc_social_contributions(

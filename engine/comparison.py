@@ -4,7 +4,9 @@ from typing import Optional
 from .parameters import TaxYearParams, get_params
 from .models import (
     HouseholdInput, MonthlyResult, SteuerklasseResult, ComparisonResult,
+    ElterngeldResult,
 )
+from .elterngeld import calc_elterngeld
 from .tax import (
     calc_est_splitting, calc_est_splitting_with_progressionsvorbehalt,
     calc_soli, calc_kirchensteuer,
@@ -16,6 +18,7 @@ from .payroll import calc_monthly_netto, calc_faktor, calc_vorsorgepauschale
 def _compute_annual_declaration(
     household: HouseholdInput,
     params: TaxYearParams,
+    elterngeld_total: float = 0.0,
 ) -> dict:
     """Tatsächliche Jahres-ESt via Einkommensteuererklärung (Splittingtabelle).
 
@@ -44,13 +47,15 @@ def _compute_annual_declaration(
     sa = 2 * params.sonderausgaben_pauschale
 
     # Vorsorgeaufwendungen (tatsächliche SV-Beiträge * 12)
+    # Durchschnittliches Monatsbrutto (brutto_annual / 12) verwenden,
+    # damit annual SV korrekt ist (auch bei >12 Gehältern).
     sv1 = calc_social_contributions(
-        p1.brutto_monthly, params, kinder=household.kinder,
+        p1.brutto_monthly_avg, params, kinder=household.kinder,
         is_beamter=p1.is_beamter, is_pkv=p1.is_pkv,
         pkv_monthly=p1.pkv_monthly, kv_zusatzbeitrag=p1.kv_zusatzbeitrag,
     )
     sv2 = calc_social_contributions(
-        p2.brutto_monthly, params, kinder=household.kinder,
+        p2.brutto_monthly_avg, params, kinder=household.kinder,
         is_beamter=p2.is_beamter, is_pkv=p2.is_pkv,
         pkv_monthly=p2.pkv_monthly, kv_zusatzbeitrag=p2.kv_zusatzbeitrag,
     )
@@ -66,11 +71,7 @@ def _compute_annual_declaration(
     combined_abzuege = wk1 + wk2 + sa + vorsorge1 + vorsorge2
     combined_zve = max(0, combined_income - combined_abzuege)
 
-    # Elterngeld (Progressionsvorbehalt)
-    elterngeld_total = (
-        p1.elterngeld_monthly * p1.elterngeld_months
-        + p2.elterngeld_monthly * p2.elterngeld_months
-    )
+    # Elterngeld (Progressionsvorbehalt) — Betrag wird vom Aufrufer übergeben
 
     # ESt via Splittingtabelle
     if elterngeld_total > 0:
@@ -137,6 +138,8 @@ def _build_steuerklasse_result(
     household: HouseholdInput,
     params: TaxYearParams,
     declaration: dict,
+    elterngeld_p1: ElterngeldResult = None,
+    elterngeld_p2: ElterngeldResult = None,
     faktor: Optional[float] = None,
 ) -> SteuerklasseResult:
     """Ergebnis für eine Steuerklassen-Kombination erstellen."""
@@ -148,13 +151,17 @@ def _build_steuerklasse_result(
         kinder=household.kinder,
     )
 
-    # Monatliches Netto pro Partner
+    # Monatliches Netto pro Partner (basierend auf Gehaltsabrechnung)
+    # brutto_monthly = brutto_annual / anzahl_gehaelter (Payslip-Betrag)
+    # brutto_annual wird separat übergeben für korrekte LSt-Berechnung
     monthly_p1 = calc_monthly_netto(
         p1.brutto_monthly, sk1, params,
         kirchensteuer=p1.kirchensteuer,
         is_beamter=p1.is_beamter, is_pkv=p1.is_pkv,
         pkv_monthly=p1.pkv_monthly, kv_zusatzbeitrag=p1.kv_zusatzbeitrag,
         faktor=faktor if sk1 == 4 and faktor else None,
+        brutto_annual=p1.brutto_annual,
+        payroll_periods=p1.anzahl_gehaelter,
         **common,
     )
     monthly_p2 = calc_monthly_netto(
@@ -163,15 +170,36 @@ def _build_steuerklasse_result(
         is_beamter=p2.is_beamter, is_pkv=p2.is_pkv,
         pkv_monthly=p2.pkv_monthly, kv_zusatzbeitrag=p2.kv_zusatzbeitrag,
         faktor=faktor if sk2 == 4 and faktor else None,
+        brutto_annual=p2.brutto_annual,
+        payroll_periods=p2.anzahl_gehaelter,
         **common,
     )
 
     hh_monthly = round(monthly_p1.netto + monthly_p2.netto, 2)
-    hh_annual = round(hh_monthly * 12, 2)
+
+    # Jährliches Netto: direkt aus Jahresbrutto berechnen, nicht monthly * 12
+    # (bei >12 Gehältern wäre monthly * 12 zu niedrig)
+    # Steuern: LSt pro Gehaltsabrechnung * Anzahl Gehälter = Jahres-LSt
+    # SV: auf brutto_monthly_avg (= brutto_annual/12) * 12 für korrekte Jahres-SV
+    sv_p1_avg = calc_social_contributions(
+        p1.brutto_monthly_avg, params, kinder=household.kinder,
+        is_beamter=p1.is_beamter, is_pkv=p1.is_pkv,
+        pkv_monthly=p1.pkv_monthly, kv_zusatzbeitrag=p1.kv_zusatzbeitrag,
+    )
+    sv_p2_avg = calc_social_contributions(
+        p2.brutto_monthly_avg, params, kinder=household.kinder,
+        is_beamter=p2.is_beamter, is_pkv=p2.is_pkv,
+        pkv_monthly=p2.pkv_monthly, kv_zusatzbeitrag=p2.kv_zusatzbeitrag,
+    )
+    annual_taxes_p1 = (monthly_p1.lohnsteuer + monthly_p1.soli + monthly_p1.kirchensteuer) * p1.anzahl_gehaelter
+    annual_taxes_p2 = (monthly_p2.lohnsteuer + monthly_p2.soli + monthly_p2.kirchensteuer) * p2.anzahl_gehaelter
+    annual_netto_p1 = p1.brutto_annual - annual_taxes_p1 - sv_p1_avg.total_an * 12
+    annual_netto_p2 = p2.brutto_annual - annual_taxes_p2 - sv_p2_avg.total_an * 12
+    hh_annual = round(annual_netto_p1 + annual_netto_p2, 2)
 
     # Jährlich einbehalten (LSt + Soli + KiSt)
-    withheld_p1 = (monthly_p1.lohnsteuer + monthly_p1.soli + monthly_p1.kirchensteuer) * 12
-    withheld_p2 = (monthly_p2.lohnsteuer + monthly_p2.soli + monthly_p2.kirchensteuer) * 12
+    withheld_p1 = (monthly_p1.lohnsteuer + monthly_p1.soli + monthly_p1.kirchensteuer) * p1.anzahl_gehaelter
+    withheld_p2 = (monthly_p2.lohnsteuer + monthly_p2.soli + monthly_p2.kirchensteuer) * p2.anzahl_gehaelter
     total_withheld = round(withheld_p1 + withheld_p2, 2)
 
     # Tatsächliche Jahressteuer (gleich für alle Kombis)
@@ -179,6 +207,17 @@ def _build_steuerklasse_result(
 
     # Differenz: positiv = Erstattung, negativ = Nachzahlung
     difference = round(total_withheld - actual_tax, 2)
+
+    eg_p1 = elterngeld_p1 or ElterngeldResult()
+    eg_p2 = elterngeld_p2 or ElterngeldResult()
+    kindergeld_monthly = declaration["kindergeld_annual"] / 12
+
+    hh_monthly_verfuegbar = round(
+        hh_monthly + eg_p1.elterngeld_monthly + eg_p2.elterngeld_monthly + kindergeld_monthly, 2
+    )
+    hh_annual_verfuegbar = round(
+        hh_annual + eg_p1.elterngeld_annual + eg_p2.elterngeld_annual + declaration["kindergeld_annual"], 2
+    )
 
     return SteuerklasseResult(
         combo_label=combo_label,
@@ -188,6 +227,10 @@ def _build_steuerklasse_result(
         partner2_monthly=monthly_p2,
         household_monthly_netto=hh_monthly,
         household_annual_netto=hh_annual,
+        elterngeld_p1=eg_p1,
+        elterngeld_p2=eg_p2,
+        household_monthly_verfuegbar=hh_monthly_verfuegbar,
+        household_annual_verfuegbar=hh_annual_verfuegbar,
         annual_est_splitting=declaration["annual_est"],
         annual_soli_splitting=declaration["annual_soli"],
         annual_kist_splitting=declaration["annual_kist"],
@@ -215,8 +258,25 @@ def compare_steuerklassen(household: HouseholdInput) -> ComparisonResult:
     p1 = household.partner1
     p2 = household.partner2
 
+    # Elterngeld berechnen (aus dem Brutto VOR der Geburt)
+    eg_p1 = calc_elterngeld(
+        p1.elterngeld_brutto_annual, p1.elterngeld_typ, params,
+        kirchensteuer=p1.kirchensteuer, bundesland=household.bundesland,
+        is_beamter=p1.is_beamter, is_pkv=p1.is_pkv,
+        pkv_monthly=p1.pkv_monthly, kv_zusatzbeitrag=p1.kv_zusatzbeitrag,
+        kinder=household.kinder,
+    )
+    eg_p2 = calc_elterngeld(
+        p2.elterngeld_brutto_annual, p2.elterngeld_typ, params,
+        kirchensteuer=p2.kirchensteuer, bundesland=household.bundesland,
+        is_beamter=p2.is_beamter, is_pkv=p2.is_pkv,
+        pkv_monthly=p2.pkv_monthly, kv_zusatzbeitrag=p2.kv_zusatzbeitrag,
+        kinder=household.kinder,
+    )
+    elterngeld_total = eg_p1.elterngeld_annual + eg_p2.elterngeld_annual
+
     # Tatsächliche Jahressteuer (gleich für alle Kombis)
-    declaration = _compute_annual_declaration(household, params)
+    declaration = _compute_annual_declaration(household, params, elterngeld_total=elterngeld_total)
 
     # Faktor berechnen
     faktor = calc_faktor(
@@ -231,25 +291,27 @@ def compare_steuerklassen(household: HouseholdInput) -> ComparisonResult:
     # Alle Kombinationen berechnen
     results = []
 
+    eg_args = dict(elterngeld_p1=eg_p1, elterngeld_p2=eg_p2)
+
     # SK 3/5
     results.append(_build_steuerklasse_result(
-        "3 / 5", 3, 5, household, params, declaration,
+        "3 / 5", 3, 5, household, params, declaration, **eg_args,
     ))
 
     # SK 5/3
     results.append(_build_steuerklasse_result(
-        "5 / 3", 5, 3, household, params, declaration,
+        "5 / 3", 5, 3, household, params, declaration, **eg_args,
     ))
 
     # SK 4/4
     results.append(_build_steuerklasse_result(
-        "4 / 4", 4, 4, household, params, declaration,
+        "4 / 4", 4, 4, household, params, declaration, **eg_args,
     ))
 
     # SK 4+Faktor / 4+Faktor
     results.append(_build_steuerklasse_result(
         f"4+F / 4+F (F={faktor:.3f})", 4, 4, household, params, declaration,
-        faktor=faktor,
+        **eg_args, faktor=faktor,
     ))
 
     # Empfehlung generieren
@@ -262,6 +324,8 @@ def compare_steuerklassen(household: HouseholdInput) -> ComparisonResult:
         annual_soli_actual=declaration["annual_soli"],
         annual_kist_actual=declaration["annual_kist"],
         kindergeld_annual=declaration["kindergeld_annual"],
+        elterngeld_p1=eg_p1,
+        elterngeld_p2=eg_p2,
         recommendation=recommendation,
     )
 

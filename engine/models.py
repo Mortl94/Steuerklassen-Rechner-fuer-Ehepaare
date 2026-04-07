@@ -1,9 +1,17 @@
 """Pydantic-Datenmodelle für Ein- und Ausgaben."""
 
+from enum import Enum
 from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator
 
 from .parameters import BUNDESLAENDER
+
+
+class ElterngeldTyp(str, Enum):
+    """Elterngeld-Variante."""
+    KEIN = "kein"
+    BASIS = "basis"          # 12 Monate, 65-67% vom Netto, max 1.800 EUR
+    PLUS = "plus"            # 24 Monate, 65-67% vom Netto, max 900 EUR
 
 
 class PartnerInput(BaseModel):
@@ -22,18 +30,37 @@ class PartnerInput(BaseModel):
     werbungskosten_ueber_pauschale: float = Field(
         0.0, ge=0, description="Werbungskosten über der Pauschale (1.230 EUR)"
     )
-    elterngeld_monthly: float = Field(0.0, ge=0, description="Monatlicher Elterngeld-Betrag")
-    elterngeld_months: int = Field(0, ge=0, le=24, description="Anzahl Monate Elterngeld")
+    elterngeld_typ: ElterngeldTyp = Field(ElterngeldTyp.KEIN, description="Elterngeld-Variante")
+    elterngeld_brutto_annual: float = Field(
+        0.0, ge=0, description="Jahresbrutto VOR der Geburt (Basis für Elterngeld-Berechnung)"
+    )
 
     @property
     def brutto_monthly(self) -> float:
-        """Reguläres monatliches Brutto (Jahresbrutto / 12)."""
+        """Brutto pro Gehaltsabrechnung (Jahresbrutto / Anzahl Gehälter).
+
+        Dies ist das reguläre monatliche Bruttogehalt, das auf der
+        Gehaltsabrechnung steht. Bei >12 Gehältern ist dies weniger als
+        der Durchschnitt (brutto_monthly_avg).
+        """
+        return self.brutto_annual / self.anzahl_gehaelter if self.brutto_annual > 0 else 0.0
+
+    @property
+    def brutto_monthly_avg(self) -> float:
+        """Durchschnittliches monatliches Brutto (Jahresbrutto / 12).
+
+        Für interne Berechnungen (Jahres-SV, Vorsorgeaufwendungen).
+        """
         return self.brutto_annual / 12 if self.brutto_annual > 0 else 0.0
 
     @property
-    def brutto_per_payslip(self) -> float:
-        """Brutto pro Gehaltsabrechnung (Jahresbrutto / Anzahl Gehälter)."""
-        return self.brutto_annual / self.anzahl_gehaelter if self.brutto_annual > 0 else 0.0
+    def elterngeld_months(self) -> int:
+        """Anzahl Monate Elterngeld je nach Typ."""
+        if self.elterngeld_typ == ElterngeldTyp.BASIS:
+            return 12
+        elif self.elterngeld_typ == ElterngeldTyp.PLUS:
+            return 24
+        return 0
 
 
 class HouseholdInput(BaseModel):
@@ -73,6 +100,21 @@ class MonthlyResult(BaseModel):
         return self.lohnsteuer + self.soli + self.kirchensteuer
 
 
+class ElterngeldResult(BaseModel):
+    """Berechnetes Elterngeld für einen Partner."""
+    elterngeld_monthly: float = 0.0   # Monatlicher Elterngeld-Betrag
+    elterngeld_months: int = 0        # Anzahl Monate
+    elterngeld_typ: ElterngeldTyp = ElterngeldTyp.KEIN
+    netto_vor_geburt: float = 0.0     # Netto vor Geburt (Berechnungsgrundlage)
+    ersatzrate: float = 0.0           # Ersatzrate (0.65-0.67)
+
+    @property
+    def elterngeld_annual(self) -> float:
+        """Jährliches Elterngeld (max 12 Monate pro Jahr)."""
+        months_per_year = min(self.elterngeld_months, 12)
+        return self.elterngeld_monthly * months_per_year
+
+
 class SteuerklasseResult(BaseModel):
     """Ergebnis für eine Steuerklassen-Kombination."""
     combo_label: str  # z.B. "3/5", "5/3", "4/4", "4+F/4+F"
@@ -82,11 +124,16 @@ class SteuerklasseResult(BaseModel):
     partner2_monthly: MonthlyResult
     household_monthly_netto: float
     household_annual_netto: float
+    # Elterngeld (steuerfrei, separat ausgezahlt)
+    elterngeld_p1: ElterngeldResult
+    elterngeld_p2: ElterngeldResult
+    household_monthly_verfuegbar: float  # Netto + Elterngeld + Kindergeld/12
+    household_annual_verfuegbar: float
     # Jahresausgleich (Einkommensteuererklärung)
     annual_est_splitting: float      # Tatsächliche ESt via Splittingtabelle
     annual_soli_splitting: float     # Tatsächlicher Soli
     annual_kist_splitting: float     # Tatsächliche Kirchensteuer
-    total_withheld_annual: float     # Summe einbehaltene LSt+Soli+KiSt über 12 Monate
+    total_withheld_annual: float     # Summe einbehaltene LSt+Soli+KiSt über alle Gehaltsabrechnungen
     annual_difference: float         # Positiv = Erstattung, Negativ = Nachzahlung
     faktor: Optional[float] = None   # Nur für 4+Faktor
 
@@ -99,4 +146,6 @@ class ComparisonResult(BaseModel):
     annual_soli_actual: float
     annual_kist_actual: float
     kindergeld_annual: float         # Jährliches Kindergeld
+    elterngeld_p1: ElterngeldResult
+    elterngeld_p2: ElterngeldResult
     recommendation: str

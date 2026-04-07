@@ -14,7 +14,7 @@ from engine.tax import (
 )
 from engine.social import calc_social_contributions, calc_pv_employee_rate
 from engine.payroll import calc_monthly_netto, calc_faktor, calc_annual_lohnsteuer
-from engine.models import PartnerInput, HouseholdInput
+from engine.models import PartnerInput, HouseholdInput, ElterngeldTyp
 from engine.comparison import compare_steuerklassen
 
 
@@ -282,6 +282,23 @@ class TestPayroll:
                  + r.kv_an + r.rv_an + r.av_an + r.pv_an + r.netto)
         assert total == pytest.approx(r.brutto, abs=0.02)
 
+    def test_payroll_periods_distribute_annual_tax(self):
+        """Bei 13 Gehältern wird die Jahressteuer auf 13 Abrechnungen verteilt."""
+        r12 = calc_monthly_netto(
+            60_000 / 12, 4, self.params,
+            brutto_annual=60_000,
+            payroll_periods=12,
+        )
+        r13 = calc_monthly_netto(
+            60_000 / 13, 4, self.params,
+            brutto_annual=60_000,
+            payroll_periods=13,
+        )
+
+        assert r13.brutto == pytest.approx(60_000 / 13)
+        assert r13.total_steuern < r12.total_steuern
+        assert r13.total_steuern * 13 == pytest.approx(r12.total_steuern * 12, abs=1.0)
+
 
 class TestFaktor:
     params = PARAMS_2025
@@ -383,13 +400,13 @@ class TestComparison:
         assert sk44.partner1_monthly.av_an == 0
 
     def test_elterngeld_only(self):
-        """Partner 2 hat nur Elterngeld, kein Brutto."""
+        """Partner 2 hat nur Elterngeld, kein aktuelles Brutto."""
         hh = HouseholdInput(
             partner1=PartnerInput(brutto_annual=60_000),
             partner2=PartnerInput(
                 brutto_annual=0,
-                elterngeld_monthly=900,
-                elterngeld_months=24,
+                elterngeld_typ=ElterngeldTyp.PLUS,
+                elterngeld_brutto_annual=48_000,
             ),
             year=2025,
             bundesland="Bayern",
@@ -401,8 +418,10 @@ class TestComparison:
         sk44 = result.results[2]
         assert sk44.partner2_monthly.netto == 0
         assert sk44.partner2_monthly.lohnsteuer == 0
-        # Aber: Progressionsvorbehalt erhöht die Steuer auf Partner 1
-        # -> Jahres-ESt sollte höher sein als ohne Elterngeld
+        # Elterngeld wird aus dem Brutto vor der Geburt berechnet
+        assert result.elterngeld_p2.elterngeld_monthly > 0
+        assert result.elterngeld_p2.netto_vor_geburt > 0
+        # Progressionsvorbehalt erhöht die Steuer auf Partner 1
         hh_no_eg = HouseholdInput(
             partner1=PartnerInput(brutto_annual=60_000),
             partner2=PartnerInput(brutto_annual=0),
@@ -412,6 +431,28 @@ class TestComparison:
         )
         result_no_eg = compare_steuerklassen(hh_no_eg)
         assert result.annual_est_actual >= result_no_eg.annual_est_actual
+
+    def test_elterngeld_separate_brutto(self):
+        """Elterngeld-Brutto ist unabhängig vom aktuellen Brutto."""
+        hh = HouseholdInput(
+            partner1=PartnerInput(brutto_annual=60_000),
+            partner2=PartnerInput(
+                brutto_annual=30_000,
+                elterngeld_typ=ElterngeldTyp.BASIS,
+                elterngeld_brutto_annual=50_000,
+            ),
+            year=2025,
+            bundesland="Bayern",
+            kinder=1,
+        )
+        result = compare_steuerklassen(hh)
+        # Elterngeld basiert auf 50k, nicht auf 30k
+        # Partner 2 hat Netto aus dem aktuellen 30k Brutto
+        sk44 = result.results[2]
+        assert sk44.partner2_monthly.netto > 0
+        # Elterngeld-Netto basiert auf 50k Brutto vor Geburt
+        assert result.elterngeld_p2.elterngeld_monthly > 300  # über Mindestbetrag
+        assert result.elterngeld_p2.netto_vor_geburt > 0
 
     def test_13_gehaelter(self):
         """13 Monatsgehälter: gleiche Jahressteuer wie 12 bei gleichem Jahresbrutto."""
@@ -429,6 +470,21 @@ class TestComparison:
         r13 = compare_steuerklassen(hh_13)
         # Gleiche Jahressteuer (Jahresbrutto ist identisch)
         assert r12.annual_est_actual == r13.annual_est_actual
-        # brutto_per_payslip unterscheidet sich
-        assert hh_12.partner1.brutto_per_payslip == 5000
-        assert hh_13.partner1.brutto_per_payslip == pytest.approx(60_000 / 13)
+        # brutto_monthly ist jetzt Payslip-Betrag
+        assert hh_12.partner1.brutto_monthly == 5000
+        assert hh_13.partner1.brutto_monthly == pytest.approx(60_000 / 13)
+        # brutto_monthly_avg ist immer brutto_annual / 12
+        assert hh_12.partner1.brutto_monthly_avg == 5000
+        assert hh_13.partner1.brutto_monthly_avg == 5000
+        # Monatliches Netto bei 13 Gehältern ist niedriger (niedrigeres Payslip-Brutto)
+        sk44_12 = r12.results[2]
+        sk44_13 = r13.results[2]
+        assert sk44_13.partner1_monthly.brutto < sk44_12.partner1_monthly.brutto
+        assert sk44_13.partner1_monthly.total_steuern < sk44_12.partner1_monthly.total_steuern
+        assert sk44_13.total_withheld_annual == pytest.approx(
+            sk44_12.total_withheld_annual, abs=1.0
+        )
+        # Aber Jahres-Netto ist gleich (gleiches brutto_annual)
+        assert sk44_12.household_annual_netto == pytest.approx(
+            sk44_13.household_annual_netto, abs=1.0
+        )

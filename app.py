@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from engine.parameters import TAX_YEARS, BUNDESLAENDER
-from engine.models import PartnerInput, HouseholdInput, ComparisonResult
+from engine.models import PartnerInput, HouseholdInput, ComparisonResult, ElterngeldTyp
 from engine.comparison import compare_steuerklassen
 
 
@@ -58,7 +58,10 @@ def main():
         "⚠️ Alle Berechnungen ohne Gewähr. Dies ist keine Steuerberatung. "
         "Die Ergebnisse dienen nur zur Orientierung. Für verbindliche Auskünfte "
         "wenden Sie sich an einen Steuerberater oder das zuständige Finanzamt. "
-        "Abweichungen zum tatsächlichen Lohnsteuerabzug sind möglich."
+        "Abweichungen zum tatsächlichen Lohnsteuerabzug sind möglich. "
+        "Bei >12 Gehältern: Die monatliche Ansicht zeigt das reguläre Monatsgehalt. "
+        "Sonderzahlungen (13./14. Gehalt) werden vereinfacht wie reguläre Gehälter "
+        "behandelt (nicht als sonstiger Bezug). Die Jahressteuer ist davon nicht betroffen."
     )
 
 
@@ -91,8 +94,8 @@ def _render_sidebar() -> HouseholdInput | None:
 
     # Mindestens ein Partner braucht Einkommen oder Elterngeld
     has_income = (
-        p1.brutto_annual > 0 or p1.elterngeld_monthly > 0
-        or p2.brutto_annual > 0 or p2.elterngeld_monthly > 0
+        p1.brutto_annual > 0 or p1.elterngeld_typ != ElterngeldTyp.KEIN
+        or p2.brutto_annual > 0 or p2.elterngeld_typ != ElterngeldTyp.KEIN
     )
     if not has_income:
         return None
@@ -125,7 +128,7 @@ def _render_partner_input(key_prefix: str) -> PartnerInput:
         help="Wie viele Monatsgehälter pro Jahr? (12 = Standard, 13 = mit Weihnachtsgeld, etc.)",
     )
 
-    if brutto_annual > 0:
+    if brutto_annual > 0 and anzahl_gehaelter != 12:
         st.caption(f"= {brutto_annual / anzahl_gehaelter:,.2f} EUR pro Gehaltsabrechnung, "
                    f"{brutto_annual / 12:,.2f} EUR durchschnittlich/Monat")
 
@@ -141,28 +144,40 @@ def _render_partner_input(key_prefix: str) -> PartnerInput:
             key=f"{key_prefix}_pkv_betrag",
         )
 
-    # Elterngeld (prominent, nicht versteckt)
-    elterngeld = st.number_input(
-        "Elterngeld / Monat (EUR)",
-        min_value=0.0, max_value=2_000.0, value=0.0, step=100.0,
+    # Elterngeld-Typ auswählen
+    eg_options = {
+        "Kein Elterngeld": ElterngeldTyp.KEIN,
+        "Elterngeld Basis (12 Mon., max 1.800 €)": ElterngeldTyp.BASIS,
+        "Elterngeld Plus (24 Mon., max 900 €)": ElterngeldTyp.PLUS,
+    }
+    eg_label = st.selectbox(
+        "Elterngeld",
+        options=list(eg_options.keys()),
         key=f"{key_prefix}_eg",
-        help="Steuerfrei, erhöht aber den Steuersatz auf andere Einkünfte (Progressionsvorbehalt)",
+        help="Steuerfrei, erhöht aber den Steuersatz auf andere Einkünfte (Progressionsvorbehalt). Betrag wird automatisch aus dem Brutto vor der Geburt berechnet.",
     )
+    elterngeld_typ = eg_options[eg_label]
 
-    elterngeld_months = 0
-    if elterngeld > 0:
-        elterngeld_months = st.number_input(
-            "Elterngeld-Monate",
-            min_value=1, max_value=24, value=12,
-            key=f"{key_prefix}_eg_monate",
+    elterngeld_brutto_annual = 0.0
+    if elterngeld_typ != ElterngeldTyp.KEIN:
+        elterngeld_brutto_annual = st.number_input(
+            "Jahresbrutto vor der Geburt (EUR)",
+            min_value=0.0,
+            max_value=500_000.0,
+            value=0.0,
+            step=1_000.0,
+            key=f"{key_prefix}_eg_brutto",
+            help="Das Bruttojahresgehalt VOR der Geburt. Daraus wird das Elterngeld berechnet.",
         )
+        if elterngeld_brutto_annual > 0:
+            st.caption(f"= {elterngeld_brutto_annual / 12:,.2f} EUR/Monat brutto vor Geburt")
 
     # Erweiterte Optionen
     with st.expander("Erweiterte Optionen"):
         kv_zusatzbeitrag_pct = st.number_input(
             "KV-Zusatzbeitrag (%)",
             min_value=0.0, max_value=10.0, value=0.0, step=0.1,
-            help="0 = Durchschnittswert des Jahres verwenden",
+            help="0 = offiziellen durchschnittlichen Zusatzbeitrag des Jahres verwenden; kassenindividueller Beitrag kann abweichen",
             key=f"{key_prefix}_zusatz",
         )
         kv_zusatzbeitrag = kv_zusatzbeitrag_pct / 100 if kv_zusatzbeitrag_pct > 0 else None
@@ -190,8 +205,8 @@ def _render_partner_input(key_prefix: str) -> PartnerInput:
         kv_zusatzbeitrag=kv_zusatzbeitrag,
         weitere_einkuenfte=weitere_einkuenfte,
         werbungskosten_ueber_pauschale=werbungskosten,
-        elterngeld_monthly=elterngeld,
-        elterngeld_months=elterngeld_months,
+        elterngeld_typ=elterngeld_typ,
+        elterngeld_brutto_annual=elterngeld_brutto_annual,
     )
 
 
@@ -208,19 +223,51 @@ def _render_overview(result: ComparisonResult):
     )
 
     # Vergleichstabelle
+    has_elterngeld = (
+        result.elterngeld_p1.elterngeld_monthly > 0
+        or result.elterngeld_p2.elterngeld_monthly > 0
+    )
+    has_kindergeld = result.kindergeld_annual > 0
+    has_transfers = has_elterngeld or has_kindergeld
     rows = []
     for r in result.results:
-        rows.append({
+        row = {
             "Steuerklasse": r.combo_label,
             "P1 Netto/Mo": f"{r.partner1_monthly.netto:,.2f} €",
             "P2 Netto/Mo": f"{r.partner2_monthly.netto:,.2f} €",
-            "Haushalt/Mo": f"{r.household_monthly_netto:,.2f} €",
-            "Haushalt/Jahr": f"{r.household_annual_netto:,.2f} €",
-            "Erstattung (+) / Nachzahlung (-)": f"{r.annual_difference:+,.2f} €",
-        })
+            "Haushalt Netto/Mo": f"{r.household_monthly_netto:,.2f} €",
+        }
+        if has_elterngeld:
+            eg_total = r.elterngeld_p1.elterngeld_monthly + r.elterngeld_p2.elterngeld_monthly
+            row["+ Elterngeld/Mo"] = f"{eg_total:,.2f} €"
+        if has_kindergeld:
+            row["+ Kindergeld/Mo"] = f"{result.kindergeld_annual / 12:,.2f} €"
+        if has_transfers:
+            row["Verfügbar/Mo"] = f"{r.household_monthly_verfuegbar:,.2f} €"
+        row["Erstattung (+) / Nachzahlung (-)"] = f"{r.annual_difference:+,.2f} €"
+        rows.append(row)
 
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Elterngeld-Info
+    if has_elterngeld:
+        eg_lines = []
+        if result.elterngeld_p1.elterngeld_monthly > 0:
+            eg1 = result.elterngeld_p1
+            eg_lines.append(
+                f"**Partner 1**: {eg1.elterngeld_monthly:,.2f} EUR/Mo "
+                f"({eg1.elterngeld_typ.value.capitalize()}, {eg1.elterngeld_months} Monate, "
+                f"Ersatzrate {eg1.ersatzrate:.1%})"
+            )
+        if result.elterngeld_p2.elterngeld_monthly > 0:
+            eg2 = result.elterngeld_p2
+            eg_lines.append(
+                f"**Partner 2**: {eg2.elterngeld_monthly:,.2f} EUR/Mo "
+                f"({eg2.elterngeld_typ.value.capitalize()}, {eg2.elterngeld_months} Monate, "
+                f"Ersatzrate {eg2.ersatzrate:.1%})"
+            )
+        st.success("Elterngeld (steuerfrei, Progressionsvorbehalt):  \n" + "  \n".join(eg_lines))
 
     # Kindergeld-Info
     if result.kindergeld_annual > 0:
@@ -228,15 +275,23 @@ def _render_overview(result: ComparisonResult):
                    f"({result.kindergeld_annual / 12:,.2f} EUR / Monat)")
 
     # Delta-Metriken
-    st.subheader("Vergleich: Monatlicher Cashflow")
+    st.subheader("Vergleich: Monatlich verfügbar (Netto + Elterngeld + Kindergeld)" if has_transfers
+                 else "Vergleich: Monatlicher Cashflow")
     cols = st.columns(len(result.results))
-    ref_netto = result.results[2].household_monthly_netto  # 4/4 als Referenz
+    if has_transfers:
+        ref_value = result.results[2].household_monthly_verfuegbar
+    else:
+        ref_value = result.results[2].household_monthly_netto
 
     for i, r in enumerate(result.results):
-        delta = r.household_monthly_netto - ref_netto
+        if has_transfers:
+            value = r.household_monthly_verfuegbar
+        else:
+            value = r.household_monthly_netto
+        delta = value - ref_value
         cols[i].metric(
             label=f"SK {r.combo_label}",
-            value=f"{r.household_monthly_netto:,.0f} €/Mo",
+            value=f"{value:,.0f} €/Mo",
             delta=f"{delta:+,.0f} € vs. 4/4" if abs(delta) > 0.01 else "Referenz",
         )
 
@@ -258,43 +313,48 @@ def _render_monthly_details(result: ComparisonResult):
 
         with col1:
             st.markdown("**Partner 1**")
-            _render_breakdown_table(r.partner1_monthly)
+            _render_breakdown_table(r.partner1_monthly, r.elterngeld_p1)
 
         with col2:
             st.markdown("**Partner 2**")
-            _render_breakdown_table(r.partner2_monthly)
+            _render_breakdown_table(r.partner2_monthly, r.elterngeld_p2)
 
         st.divider()
 
 
-def _render_breakdown_table(m):
+def _render_breakdown_table(m, eg: "ElterngeldResult | None" = None):
     """Aufschlüsselung eines MonthlyResult als Tabelle."""
-    data = {
-        "Position": [
-            "Bruttogehalt",
-            "- Lohnsteuer",
-            "- Solidaritätszuschlag",
-            "- Kirchensteuer",
-            "- Krankenversicherung",
-            "- Rentenversicherung",
-            "- Arbeitslosenversicherung",
-            "- Pflegeversicherung",
-            "**= Nettoeinkommen**",
-        ],
-        "Betrag": [
-            f"{m.brutto:,.2f} €",
-            f"-{m.lohnsteuer:,.2f} €",
-            f"-{m.soli:,.2f} €",
-            f"-{m.kirchensteuer:,.2f} €",
-            f"-{m.kv_an:,.2f} €",
-            f"-{m.rv_an:,.2f} €",
-            f"-{m.av_an:,.2f} €",
-            f"-{m.pv_an:,.2f} €",
-            f"**{m.netto:,.2f} €**",
-        ],
-    }
+    positions = [
+        "Bruttogehalt",
+        "- Lohnsteuer",
+        "- Solidaritätszuschlag",
+        "- Kirchensteuer",
+        "- Krankenversicherung",
+        "- Rentenversicherung",
+        "- Arbeitslosenversicherung",
+        "- Pflegeversicherung",
+        "**= Nettoeinkommen**",
+    ]
+    betraege = [
+        f"{m.brutto:,.2f} €",
+        f"-{m.lohnsteuer:,.2f} €",
+        f"-{m.soli:,.2f} €",
+        f"-{m.kirchensteuer:,.2f} €",
+        f"-{m.kv_an:,.2f} €",
+        f"-{m.rv_an:,.2f} €",
+        f"-{m.av_an:,.2f} €",
+        f"-{m.pv_an:,.2f} €",
+        f"**{m.netto:,.2f} €**",
+    ]
+
+    if eg and eg.elterngeld_monthly > 0:
+        positions.append(f"+ Elterngeld ({eg.elterngeld_typ.value.capitalize()})")
+        betraege.append(f"+{eg.elterngeld_monthly:,.2f} €")
+        positions.append("**= Verfügbar / Monat**")
+        betraege.append(f"**{m.netto + eg.elterngeld_monthly:,.2f} €**")
+
     st.dataframe(
-        pd.DataFrame(data),
+        pd.DataFrame({"Position": positions, "Betrag": betraege}),
         use_container_width=True,
         hide_index=True,
     )
@@ -340,17 +400,21 @@ def _render_annual_settlement(result: ComparisonResult):
     )
 
     # Effektives Jahresergebnis
-    st.subheader("Effektives Jahresergebnis (Netto + Erstattung/Nachzahlung)")
+    st.subheader("Effektives Jahresergebnis (Netto + Elterngeld + Erstattung/Nachzahlung)")
+    eg_annual_total = result.elterngeld_p1.elterngeld_annual + result.elterngeld_p2.elterngeld_annual
     rows_eff = []
     for r in result.results:
         effective = r.household_annual_netto + r.annual_difference
-        rows_eff.append({
+        row = {
             "Steuerklasse": r.combo_label,
-            "Jahres-Netto (monatl. x 12)": f"{r.household_annual_netto:,.2f} €",
+            "Jahres-Netto": f"{r.household_annual_netto:,.2f} €",
             "Erstattung/Nachzahlung": f"{r.annual_difference:+,.2f} €",
-            "Kindergeld": f"+{result.kindergeld_annual:,.2f} €",
-            "Effektiv verfügbar": f"{effective + result.kindergeld_annual:,.2f} €",
-        })
+        }
+        if eg_annual_total > 0:
+            row["Elterngeld/Jahr"] = f"+{eg_annual_total:,.2f} €"
+        row["Kindergeld"] = f"+{result.kindergeld_annual:,.2f} €"
+        row["Effektiv verfügbar"] = f"{effective + result.kindergeld_annual + eg_annual_total:,.2f} €"
+        rows_eff.append(row)
 
     st.dataframe(pd.DataFrame(rows_eff), use_container_width=True, hide_index=True)
 
@@ -362,19 +426,33 @@ def _render_annual_settlement(result: ComparisonResult):
 def _render_charts(result: ComparisonResult):
     """Tab 4: Plotly-Charts."""
 
-    # Chart 1: Monatliches Haushaltsnetto
-    st.subheader("Monatliches Haushaltsnetto nach Steuerklasse")
+    # Chart 1: Monatliches Haushaltsnetto (+ Elterngeld)
+    has_elterngeld = (
+        result.elterngeld_p1.elterngeld_monthly > 0
+        or result.elterngeld_p2.elterngeld_monthly > 0
+    )
+    chart_title = "Monatlich verfügbar nach Steuerklasse" if has_elterngeld else "Monatliches Haushaltsnetto nach Steuerklasse"
+    st.subheader(chart_title)
     labels = [r.combo_label for r in result.results]
     p1_values = [r.partner1_monthly.netto for r in result.results]
     p2_values = [r.partner2_monthly.netto for r in result.results]
 
-    fig1 = go.Figure(data=[
-        go.Bar(name="Partner 1", x=labels, y=p1_values, marker_color="#1f77b4"),
-        go.Bar(name="Partner 2", x=labels, y=p2_values, marker_color="#ff7f0e"),
-    ])
+    bars = [
+        go.Bar(name="P1 Netto", x=labels, y=p1_values, marker_color="#1f77b4"),
+        go.Bar(name="P2 Netto", x=labels, y=p2_values, marker_color="#ff7f0e"),
+    ]
+    if has_elterngeld:
+        eg1_values = [r.elterngeld_p1.elterngeld_monthly for r in result.results]
+        eg2_values = [r.elterngeld_p2.elterngeld_monthly for r in result.results]
+        if result.elterngeld_p1.elterngeld_monthly > 0:
+            bars.append(go.Bar(name="P1 Elterngeld", x=labels, y=eg1_values, marker_color="#2ca02c"))
+        if result.elterngeld_p2.elterngeld_monthly > 0:
+            bars.append(go.Bar(name="P2 Elterngeld", x=labels, y=eg2_values, marker_color="#98df8a"))
+
+    fig1 = go.Figure(data=bars)
     fig1.update_layout(
         barmode="stack",
-        yaxis_title="Netto / Monat (EUR)",
+        yaxis_title="EUR / Monat",
         xaxis_title="Steuerklasse",
         height=400,
     )
@@ -412,35 +490,49 @@ def _render_charts(result: ComparisonResult):
     )
     r = result.results[selected_sk]
 
-    for partner_label, m in [("Partner 1", r.partner1_monthly), ("Partner 2", r.partner2_monthly)]:
+    for partner_label, m, eg in [
+        ("Partner 1", r.partner1_monthly, r.elterngeld_p1),
+        ("Partner 2", r.partner2_monthly, r.elterngeld_p2),
+    ]:
+        x_labels = ["Brutto", "LSt", "Soli", "KiSt", "KV", "RV", "AV", "PV", "Netto"]
+        y_vals = [
+            m.brutto,
+            -m.lohnsteuer,
+            -m.soli,
+            -m.kirchensteuer,
+            -m.kv_an,
+            -m.rv_an,
+            -m.av_an,
+            -m.pv_an,
+            0,
+        ]
+        measures = ["absolute", "relative", "relative", "relative",
+                    "relative", "relative", "relative", "relative", "total"]
+        texts = [
+            f"{m.brutto:,.0f}",
+            f"-{m.lohnsteuer:,.0f}",
+            f"-{m.soli:,.0f}",
+            f"-{m.kirchensteuer:,.0f}",
+            f"-{m.kv_an:,.0f}",
+            f"-{m.rv_an:,.0f}",
+            f"-{m.av_an:,.0f}",
+            f"-{m.pv_an:,.0f}",
+            f"{m.netto:,.0f}",
+        ]
+
+        if eg.elterngeld_monthly > 0:
+            x_labels.extend(["Elterngeld", "Verfügbar"])
+            y_vals.extend([eg.elterngeld_monthly, 0])
+            measures.extend(["relative", "total"])
+            texts.extend([f"+{eg.elterngeld_monthly:,.0f}", f"{m.netto + eg.elterngeld_monthly:,.0f}"])
+
         fig3 = go.Figure(go.Waterfall(
             name=partner_label,
             orientation="v",
-            x=["Brutto", "LSt", "Soli", "KiSt", "KV", "RV", "AV", "PV", "Netto"],
-            y=[
-                m.brutto,
-                -m.lohnsteuer,
-                -m.soli,
-                -m.kirchensteuer,
-                -m.kv_an,
-                -m.rv_an,
-                -m.av_an,
-                -m.pv_an,
-                0,
-            ],
-            measure=["absolute", "relative", "relative", "relative",
-                      "relative", "relative", "relative", "relative", "total"],
-            text=[
-                f"{m.brutto:,.0f}",
-                f"-{m.lohnsteuer:,.0f}",
-                f"-{m.soli:,.0f}",
-                f"-{m.kirchensteuer:,.0f}",
-                f"-{m.kv_an:,.0f}",
-                f"-{m.rv_an:,.0f}",
-                f"-{m.av_an:,.0f}",
-                f"-{m.pv_an:,.0f}",
-                f"{m.netto:,.0f}",
-            ],
+            x=x_labels,
+            y=y_vals,
+            measure=measures,
+            text=texts,
             textposition="outside",
             connector={"line": {"color": "rgb(63, 63, 63)"}},
         ))
