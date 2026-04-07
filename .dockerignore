@@ -5,6 +5,7 @@ __pycache__
 .claude
 tests
 *.md
+!README.md
 .env
 .env.*
 docker-compose*.yml
