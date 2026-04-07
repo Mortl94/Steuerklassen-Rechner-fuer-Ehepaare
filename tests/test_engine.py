@@ -376,6 +376,73 @@ class TestComparison:
         result = compare_steuerklassen(hh)
         assert result.kindergeld_annual == 2 * 255 * 12
 
+    def test_unmarried_comparison_unequal_income_shows_splitting_benefit(self):
+        """Bei stark ungleichen Einkommen ist Splitting günstiger als Einzelveranlagung."""
+        result = compare_steuerklassen(self._make_household(brutto1=80_000, brutto2=20_000))
+        comparison = result.unmarried_comparison
+
+        assert comparison.unmarried_total_tax > comparison.married_total_tax
+        assert comparison.splitting_benefit > 0
+        assert comparison.splitting_benefit == pytest.approx(
+            comparison.unmarried_total_tax - comparison.married_total_tax,
+            abs=0.01,
+        )
+
+    def test_unmarried_comparison_equal_income_near_zero_benefit(self):
+        """Bei gleichen Einkommen ist der Splitting-Vorteil nahe null."""
+        result = compare_steuerklassen(self._make_household(brutto1=50_000, brutto2=50_000))
+
+        assert result.unmarried_comparison.splitting_benefit == pytest.approx(0, abs=1.0)
+
+    def test_unmarried_comparison_church_tax_is_individual(self):
+        """Kirchensteuer wird im Einzelvergleich pro Partner berechnet."""
+        hh = HouseholdInput(
+            partner1=PartnerInput(brutto_annual=60_000, kirchensteuer=True),
+            partner2=PartnerInput(brutto_annual=36_000, kirchensteuer=False),
+            year=2025,
+            bundesland="Bayern",
+            kinder=0,
+        )
+        result = compare_steuerklassen(hh)
+        comparison = result.unmarried_comparison
+
+        assert comparison.partner1.annual_kist == pytest.approx(
+            calc_kirchensteuer(comparison.partner1.annual_est, "Bayern", PARAMS_2025),
+            abs=0.01,
+        )
+        assert comparison.partner2.annual_kist == 0
+
+    def test_unmarried_comparison_assigns_elterngeld_progression_to_partner(self):
+        """Elterngeld-Progressionsvorbehalt wird dem jeweiligen Partner zugeordnet."""
+        hh_with_eg = HouseholdInput(
+            partner1=PartnerInput(brutto_annual=60_000),
+            partner2=PartnerInput(
+                brutto_annual=30_000,
+                elterngeld_typ=ElterngeldTyp.BASIS,
+                elterngeld_brutto_annual=50_000,
+            ),
+            year=2025,
+            bundesland="Bayern",
+            kinder=0,
+        )
+        hh_without_eg = HouseholdInput(
+            partner1=PartnerInput(brutto_annual=60_000),
+            partner2=PartnerInput(brutto_annual=30_000),
+            year=2025,
+            bundesland="Bayern",
+            kinder=0,
+        )
+        result_with_eg = compare_steuerklassen(hh_with_eg)
+        result_without_eg = compare_steuerklassen(hh_without_eg)
+
+        assert (
+            result_with_eg.unmarried_comparison.partner2.annual_est
+            > result_without_eg.unmarried_comparison.partner2.annual_est
+        )
+        assert result_with_eg.unmarried_comparison.partner1.annual_est == (
+            result_without_eg.unmarried_comparison.partner1.annual_est
+        )
+
     def test_year_2026(self):
         """Berechnung für 2026 funktioniert."""
         result = compare_steuerklassen(self._make_household(year=2026))

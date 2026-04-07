@@ -3,11 +3,12 @@
 from typing import Optional
 from .parameters import TaxYearParams, get_params
 from .models import (
-    HouseholdInput, MonthlyResult, SteuerklasseResult, ComparisonResult,
-    ElterngeldResult,
+    HouseholdInput, PartnerInput, MonthlyResult, SteuerklasseResult, ComparisonResult,
+    ElterngeldResult, IndividualTaxResult, UnmarriedComparisonResult,
 )
 from .elterngeld import calc_elterngeld
 from .tax import (
+    calc_est, calc_est_with_progressionsvorbehalt,
     calc_est_splitting, calc_est_splitting_with_progressionsvorbehalt,
     calc_soli, calc_kirchensteuer,
 )
@@ -129,6 +130,76 @@ def _compute_annual_declaration(
         "use_kinderfreibetrag": use_kinderfreibetrag,
         "kfb_steuervorteil": kfb_steuervorteil,
     }
+
+
+def _compute_individual_declaration(
+    partner: PartnerInput,
+    params: TaxYearParams,
+    bundesland: str,
+    kinder: int,
+    elterngeld_annual: float = 0.0,
+) -> IndividualTaxResult:
+    """Vereinfachte Einzelveranlagung für einen Partner."""
+    income = partner.brutto_annual + partner.weitere_einkuenfte
+    wk = max(
+        params.werbungskosten_pauschale,
+        params.werbungskosten_pauschale + partner.werbungskosten_ueber_pauschale,
+    )
+    sv = calc_social_contributions(
+        partner.brutto_monthly_avg, params, kinder=kinder,
+        is_beamter=partner.is_beamter, is_pkv=partner.is_pkv,
+        pkv_monthly=partner.pkv_monthly, kv_zusatzbeitrag=partner.kv_zusatzbeitrag,
+    )
+    vorsorge = sv.total_an * 12
+    zve = max(0, income - wk - params.sonderausgaben_pauschale - vorsorge)
+
+    if elterngeld_annual > 0:
+        annual_est = calc_est_with_progressionsvorbehalt(zve, elterngeld_annual, params)
+    else:
+        annual_est = calc_est(zve, params)
+
+    annual_soli = calc_soli(annual_est, params, is_couple=False)
+    annual_kist = calc_kirchensteuer(annual_est, bundesland, params) if partner.kirchensteuer else 0.0
+    total_tax = round(annual_est + annual_soli + annual_kist, 2)
+
+    return IndividualTaxResult(
+        annual_est=annual_est,
+        annual_soli=annual_soli,
+        annual_kist=annual_kist,
+        total_tax=total_tax,
+    )
+
+
+def _compute_unmarried_comparison(
+    household: HouseholdInput,
+    params: TaxYearParams,
+    declaration: dict,
+    elterngeld_p1: ElterngeldResult,
+    elterngeld_p2: ElterngeldResult,
+) -> UnmarriedComparisonResult:
+    """Vereinfachter Vergleich: Ehegattensplitting vs. zwei Einzelveranlagungen."""
+    p1_tax = _compute_individual_declaration(
+        household.partner1, params, household.bundesland, household.kinder,
+        elterngeld_annual=elterngeld_p1.elterngeld_annual,
+    )
+    p2_tax = _compute_individual_declaration(
+        household.partner2, params, household.bundesland, household.kinder,
+        elterngeld_annual=elterngeld_p2.elterngeld_annual,
+    )
+
+    married_total = round(
+        declaration["annual_est"] + declaration["annual_soli"] + declaration["annual_kist"],
+        2,
+    )
+    unmarried_total = round(p1_tax.total_tax + p2_tax.total_tax, 2)
+
+    return UnmarriedComparisonResult(
+        married_total_tax=married_total,
+        unmarried_total_tax=unmarried_total,
+        splitting_benefit=round(unmarried_total - married_total, 2),
+        partner1=p1_tax,
+        partner2=p2_tax,
+    )
 
 
 def _build_steuerklasse_result(
@@ -277,6 +348,9 @@ def compare_steuerklassen(household: HouseholdInput) -> ComparisonResult:
 
     # Tatsächliche Jahressteuer (gleich für alle Kombis)
     declaration = _compute_annual_declaration(household, params, elterngeld_total=elterngeld_total)
+    unmarried_comparison = _compute_unmarried_comparison(
+        household, params, declaration, eg_p1, eg_p2,
+    )
 
     # Faktor berechnen
     faktor = calc_faktor(
@@ -326,6 +400,7 @@ def compare_steuerklassen(household: HouseholdInput) -> ComparisonResult:
         kindergeld_annual=declaration["kindergeld_annual"],
         elterngeld_p1=eg_p1,
         elterngeld_p2=eg_p2,
+        unmarried_comparison=unmarried_comparison,
         recommendation=recommendation,
     )
 

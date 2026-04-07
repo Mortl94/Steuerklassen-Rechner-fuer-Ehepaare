@@ -1,5 +1,7 @@
 """Steuerklassen-Rechner für Ehepaare — Streamlit UI."""
 
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -33,10 +35,12 @@ def main():
     result = compare_steuerklassen(household)
 
     # --- Tabs ---
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "Übersicht",
         "Monatsdetails",
         "Jahresausgleich",
+        "Unverheiratet",
+        "Erklärungen",
         "Visualisierungen",
     ])
 
@@ -50,6 +54,12 @@ def main():
         _render_annual_settlement(result)
 
     with tab4:
+        _render_unmarried_comparison(result)
+
+    with tab5:
+        _render_explanations()
+
+    with tab6:
         _render_charts(result)
 
     # --- Disclaimer ---
@@ -420,11 +430,92 @@ def _render_annual_settlement(result: ComparisonResult):
 
 
 # ============================================================
-# Tab 4: Visualisierungen
+# Tab 4: Unverheiratet
+# ============================================================
+
+def _render_unmarried_comparison(result: ComparisonResult):
+    """Tab 4: Vereinfachter Vergleich mit Einzelveranlagung."""
+    comparison = result.unmarried_comparison
+
+    st.subheader("Vereinfachter Vergleich: verheiratet vs. unverheiratet")
+    st.info(
+        "Dieser Vergleich zeigt eine pragmatische Näherung: Das Paar wird einmal mit "
+        "Splittingtarif und einmal so gerechnet, als würden beide Partner einzeln nach "
+        "Grundtabelle veranlagt. Kindergeld bleibt außen vor; Kinderfreibetrag-Details "
+        "für unverheiratete Eltern werden hier nicht separat simuliert."
+    )
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Verheiratet (Splitting)", f"{comparison.married_total_tax:,.2f} €")
+    col2.metric("Unverheiratet (einzeln)", f"{comparison.unmarried_total_tax:,.2f} €")
+    col3.metric("Splitting-Vorteil", f"{comparison.splitting_benefit:,.2f} €")
+
+    rows = [
+        {
+            "Partner": "Partner 1",
+            "Einkommensteuer": f"{comparison.partner1.annual_est:,.2f} €",
+            "Solidaritätszuschlag": f"{comparison.partner1.annual_soli:,.2f} €",
+            "Kirchensteuer": f"{comparison.partner1.annual_kist:,.2f} €",
+            "Gesamt": f"{comparison.partner1.total_tax:,.2f} €",
+        },
+        {
+            "Partner": "Partner 2",
+            "Einkommensteuer": f"{comparison.partner2.annual_est:,.2f} €",
+            "Solidaritätszuschlag": f"{comparison.partner2.annual_soli:,.2f} €",
+            "Kirchensteuer": f"{comparison.partner2.annual_kist:,.2f} €",
+            "Gesamt": f"{comparison.partner2.total_tax:,.2f} €",
+        },
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    if comparison.splitting_benefit > 0:
+        st.success(
+            f"Das Ehegattensplitting reduziert die Steuerlast in dieser vereinfachten "
+            f"Simulation um {comparison.splitting_benefit:,.2f} EUR pro Jahr."
+        )
+    elif comparison.splitting_benefit < 0:
+        st.warning(
+            f"In dieser vereinfachten Simulation wäre die Einzelveranlagung um "
+            f"{abs(comparison.splitting_benefit):,.2f} EUR günstiger."
+        )
+    else:
+        st.success("In dieser vereinfachten Simulation ergibt sich kein Splitting-Vorteil.")
+
+
+# ============================================================
+# Tab 5: Erklärungen
+# ============================================================
+
+def _render_explanations():
+    """Tab 5: Berechnungsmethodik aus der README anzeigen."""
+    st.subheader("Erklärungen zu Berechnung und Steuer")
+
+    readme_path = Path(__file__).with_name("README.md")
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+    except OSError:
+        st.warning("Die README konnte nicht geladen werden.")
+        return
+
+    start_marker = "## Berechnungsmethodik"
+    end_marker = "\n---\n\n## Technische Details"
+    start = readme.find(start_marker)
+    end = readme.find(end_marker, start)
+
+    if start == -1:
+        st.warning("Der README-Abschnitt zur Berechnungsmethodik wurde nicht gefunden.")
+        return
+
+    section = readme[start:end if end != -1 else None].strip()
+    st.markdown(section)
+
+
+# ============================================================
+# Tab 6: Visualisierungen
 # ============================================================
 
 def _render_charts(result: ComparisonResult):
-    """Tab 4: Plotly-Charts."""
+    """Tab 6: Plotly-Charts."""
 
     # Chart 1: Monatliches Haushaltsnetto (+ Elterngeld)
     has_elterngeld = (

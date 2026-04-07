@@ -6,6 +6,8 @@ Vergleicht die Steuerklassen-Kombinationen **3/5**, **5/3**, **4/4** und **4+Fak
 - Jährliches Netto
 - Erstattung oder Nachzahlung bei der Einkommensteuererklärung
 - Effektives Jahresergebnis nach Steuererklärung
+- Vereinfachter Vergleich mit unverheirateter Einzelveranlagung
+- In-App-Erklärungen zur Berechnungsmethodik
 
 ## Kernaussage
 
@@ -115,6 +117,13 @@ Jahressteuer = 2 * ESt(gemeinsames_zvE / 2)
 ```
 
 Das Einkommen beider Partner wird zusammengerechnet, halbiert, besteuert und verdoppelt. Das ist bei hoher Einkommensdifferenz günstiger als Einzelveranlagung.
+
+Der Tab **Unverheiratet** zeigt zusätzlich eine pragmatische Näherung:
+- Verheiratet: tatsächliche Jahressteuer nach Splittingtarif
+- Unverheiratet: beide Partner einzeln nach Grundtabelle
+- Splitting-Vorteil: Differenz aus unverheirateter Einzelsteuer und verheirateter Splittingsteuer
+
+Kindergeld bleibt in diesem Vergleich außen vor. Kinderfreibetrag-Details für unverheiratete Eltern werden in dieser v1 nicht separat simuliert.
 
 ### 3. Steuerklassen und monatlicher Lohnsteuerabzug
 
@@ -279,7 +288,7 @@ Da alle Steuerklassen die gleiche Jahressteuer ergeben, gilt:
 ### Projektstruktur
 
 ```
-├── app.py                     # Streamlit UI (4 Tabs)
+├── app.py                     # Streamlit UI (6 Tabs)
 ├── requirements.txt           # Python-Abhängigkeiten
 ├── Dockerfile                 # Docker-Container
 ├── .dockerignore
@@ -291,9 +300,9 @@ Da alle Steuerklassen die gleiche Jahressteuer ergeben, gilt:
 │   ├── social.py              # Sozialversicherungsbeiträge
 │   ├── payroll.py             # Monatl. Lohnsteuer pro Steuerklasse
 │   ├── elterngeld.py          # Elterngeld-Berechnung (Basis + Plus)
-│   └── comparison.py          # SK-Vergleich + Jahresausgleich
+│   └── comparison.py          # SK-Vergleich, Jahresausgleich + Splitting-Vergleich
 └── tests/
-    └── test_engine.py         # 48 Unit- und Integrationstests
+    └── test_engine.py         # 53 Unit- und Integrationstests
 ```
 
 ### Abhängigkeiten

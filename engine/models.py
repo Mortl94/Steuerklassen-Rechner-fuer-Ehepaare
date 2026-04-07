@@ -115,6 +115,23 @@ class ElterngeldResult(BaseModel):
         return self.elterngeld_monthly * months_per_year
 
 
+class IndividualTaxResult(BaseModel):
+    """Jahressteuer für einen einzeln veranlagten Partner."""
+    annual_est: float
+    annual_soli: float
+    annual_kist: float
+    total_tax: float
+
+
+class UnmarriedComparisonResult(BaseModel):
+    """Vereinfachter Vergleich Ehegattensplitting vs. Einzelveranlagung."""
+    married_total_tax: float
+    unmarried_total_tax: float
+    splitting_benefit: float
+    partner1: IndividualTaxResult
+    partner2: IndividualTaxResult
+
+
 class SteuerklasseResult(BaseModel):
     """Ergebnis für eine Steuerklassen-Kombination."""
     combo_label: str  # z.B. "3/5", "5/3", "4/4", "4+F/4+F"
@@ -148,4 +165,5 @@ class ComparisonResult(BaseModel):
     kindergeld_annual: float         # Jährliches Kindergeld
     elterngeld_p1: ElterngeldResult
     elterngeld_p2: ElterngeldResult
+    unmarried_comparison: UnmarriedComparisonResult
     recommendation: str
