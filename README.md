@@ -47,31 +47,63 @@ docker run -p 8501:8501 steuerrechner
 ### Docker Compose mit Caddy
 
 Für den Server ist `docker-compose.yml` vorbereitet. Die App hängt an einem externen
-Docker-Netzwerk für Caddy und bindet Port 8501 zusätzlich nur lokal an `127.0.0.1`.
+Docker-Netzwerk für Caddy und gibt Port 8501 nur im Docker-Netzwerk frei.
 
 ```bash
 # Einmalig, falls das Caddy-Netzwerk noch nicht existiert
 docker network create caddy
 
-# Optional: lokale Defaults anpassen
+# Optional: Defaults anpassen
 cp .env.example .env
 
 # App bauen und starten
 docker compose up -d --build
 ```
 
-Caddy muss im selben Docker-Netzwerk sein. Beispiel-Caddyfile:
+Für das bestehende `geogame-poc`-Setup muss der Caddy-Service zusätzlich in dieses
+externe Netzwerk. In der Server-Compose-Datei:
+
+```yaml
+services:
+  caddy:
+    environment:
+      CADDY_STEUERRECHNER_DOMAIN: ${CADDY_STEUERRECHNER_DOMAIN:-}
+    networks:
+      - default
+      - caddy
+
+networks:
+  caddy:
+    external: true
+    name: ${CADDY_NETWORK:-caddy}
+```
+
+In `infra/caddy/Caddyfile` ergänzen:
 
 ```caddyfile
-steuer.example.com {
-    reverse_proxy steuerrechner:8501
+{$CADDY_STEUERRECHNER_DOMAIN:steuer.localhost} {
+  encode zstd gzip
+  reverse_proxy steuerrechner:8501
 }
 ```
 
-Wenn dein Caddy-Netzwerk anders heißt, setze in `.env`:
+In der Server-`.env` des Caddy-Projekts:
+
+```dotenv
+CADDY_STEUERRECHNER_DOMAIN=steuer.example.com
+CADDY_NETWORK=caddy
+```
+
+Wenn dein Caddy-Netzwerk anders heißt, setze denselben Namen in der Steuerrechner-`.env`:
 
 ```dotenv
 CADDY_NETWORK=dein_caddy_netzwerk
+```
+
+Für lokale Tests mit Port-Binding:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
 ### Tests ausführen
