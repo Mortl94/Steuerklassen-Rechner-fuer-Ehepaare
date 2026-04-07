@@ -44,6 +44,36 @@ docker build -t steuerrechner .
 docker run -p 8501:8501 steuerrechner
 ```
 
+### Docker Compose mit Caddy
+
+Für den Server ist `docker-compose.yml` vorbereitet. Die App hängt an einem externen
+Docker-Netzwerk für Caddy und bindet Port 8501 zusätzlich nur lokal an `127.0.0.1`.
+
+```bash
+# Einmalig, falls das Caddy-Netzwerk noch nicht existiert
+docker network create caddy
+
+# Optional: lokale Defaults anpassen
+cp .env.example .env
+
+# App bauen und starten
+docker compose up -d --build
+```
+
+Caddy muss im selben Docker-Netzwerk sein. Beispiel-Caddyfile:
+
+```caddyfile
+steuer.example.com {
+    reverse_proxy steuerrechner:8501
+}
+```
+
+Wenn dein Caddy-Netzwerk anders heißt, setze in `.env`:
+
+```dotenv
+CADDY_NETWORK=dein_caddy_netzwerk
+```
+
 ### Tests ausführen
 
 ```bash

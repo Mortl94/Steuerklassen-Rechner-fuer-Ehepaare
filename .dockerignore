@@ -5,6 +5,9 @@ __pycache__
 .claude
 tests
 *.md
+.env
+.env.*
+docker-compose*.yml
 .pytest_cache
 .venv
 venv
