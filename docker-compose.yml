@@ -11,10 +11,3 @@ services:
       STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
     expose:
       - "8501"
-    networks:
-      - caddy
-
-networks:
-  caddy:
-    external: true
-    name: "${CADDY_NETWORK:-caddy}"

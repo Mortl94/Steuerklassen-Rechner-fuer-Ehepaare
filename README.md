@@ -40,14 +40,27 @@ Die App öffnet sich unter `http://localhost:8501`.
 # Image bauen
 docker build -t steuerrechner .
 
-# Container starten
-docker run -p 8501:8501 steuerrechner
+# Container lokal starten
+docker run --rm -p 127.0.0.1:8501:8501 steuerrechner
 ```
 
-### Docker Compose mit Caddy
+### Docker Compose lokal
 
-Für den Server ist `docker-compose.yml` vorbereitet. Die App hängt an einem externen
-Docker-Netzwerk für Caddy und gibt Port 8501 nur im Docker-Netzwerk frei.
+Für lokale Tests mit Port-Binding:
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+Die App ist dann unter `http://127.0.0.1:8501` erreichbar.
+
+### Docker Compose auf dem Server mit zentralem Caddy
+
+Auf dem Server sollte der Streamlit-Container **nicht direkt öffentlich exposed**
+werden. Nur der zentrale Caddy veröffentlicht `80/443`; die App hängt intern am
+externen Docker-Netzwerk `caddy` und ist dort für Caddy unter `steuerrechner:8501`
+erreichbar.
 
 ```bash
 # Einmalig, falls das Caddy-Netzwerk noch nicht existiert
@@ -56,55 +69,59 @@ docker network create caddy
 # Optional: Defaults anpassen
 cp .env.example .env
 
-# App bauen und starten
-docker compose up -d --build
+# App bauen und im Caddy-Netz starten
+docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
-Für das bestehende `geogame-poc`-Setup muss der Caddy-Service zusätzlich in dieses
-externe Netzwerk. In der Server-Compose-Datei:
+Der zentrale Caddy-Stack läuft separat und ist der einzige Dienst mit öffentlichen
+Ports. Beispiel für dessen Compose-Datei:
 
 ```yaml
 services:
   caddy:
-    environment:
-      CADDY_STEUERRECHNER_DOMAIN: ${CADDY_STEUERRECHNER_DOMAIN:-}
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
     networks:
-      - default
       - caddy
 
 networks:
   caddy:
     external: true
     name: ${CADDY_NETWORK:-caddy}
+
+volumes:
+  caddy_data:
+  caddy_config:
 ```
 
-In `infra/caddy/Caddyfile` ergänzen:
+Im zentralen `Caddyfile`:
 
 ```caddyfile
-{$CADDY_STEUERRECHNER_DOMAIN:steuer.localhost} {
+steuerklassen-rechner.de {
   encode zstd gzip
   reverse_proxy steuerrechner:8501
 }
 ```
 
-In der Server-`.env` des Caddy-Projekts:
-
-```dotenv
-CADDY_STEUERRECHNER_DOMAIN=steuer.example.com
-CADDY_NETWORK=caddy
-```
-
-Wenn dein Caddy-Netzwerk anders heißt, setze denselben Namen in der Steuerrechner-`.env`:
+Wenn dein Caddy-Netzwerk anders heißt, setze denselben Namen in der Steuerrechner-`.env`
+und im Caddy-Stack:
 
 ```dotenv
 CADDY_NETWORK=dein_caddy_netzwerk
 ```
 
-Für lokale Tests mit Port-Binding:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
-```
+Auf dem Server sollte `8501` nicht per `ports:` veröffentlicht und nicht in der
+Firewall freigegeben werden. Access-Logs in Caddy nur bewusst aktivieren und dann
+mit kurzer Aufbewahrung dokumentieren, weil IP-Adresse und User-Agent
+personenbezogene Daten sein können.
 
 ### Tests ausführen
 
@@ -353,6 +370,9 @@ Da alle Steuerklassen die gleiche Jahressteuer ergeben, gilt:
 ├── app.py                     # Streamlit UI (6 Tabs)
 ├── requirements.txt           # Python-Abhängigkeiten
 ├── Dockerfile                 # Docker-Container
+├── docker-compose.yml         # Gemeinsame Compose-Basis ohne Host-Port
+├── docker-compose.local.yml   # Lokaler Port-Binding-Override
+├── docker-compose.server.yml  # Server-Override für externes Caddy-Netz
 ├── .dockerignore
 ├── engine/
 │   ├── __init__.py
