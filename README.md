@@ -373,6 +373,7 @@ Da alle Steuerklassen die gleiche Jahressteuer ergeben, gilt:
 ├── docker-compose.yml         # Gemeinsame Compose-Basis ohne Host-Port
 ├── docker-compose.local.yml   # Lokaler Port-Binding-Override
 ├── docker-compose.server.yml  # Server-Override für externes Caddy-Netz
+├── LICENSE                    # MIT-Lizenz
 ├── .dockerignore
 ├── engine/
 │   ├── __init__.py
@@ -403,6 +404,12 @@ Da alle Steuerklassen die gleiche Jahressteuer ergeben, gilt:
 - **Vorsorgepauschale**: Vereinfachte Berechnung (AN-Sozialversicherungsanteile statt vollem BMF-Programmablaufplan)
 - **Erwartete Abweichung**: Typisch < 10 EUR/Monat zum offiziellen BMF-Steuerrechner
 - **Quellen**: bmf-steuerrechner.de, finanz-tools.de, §32a EStG
+
+---
+
+## Lizenz
+
+Dieses Projekt steht unter der MIT-Lizenz. Siehe [LICENSE](LICENSE).
 
 ---
 
