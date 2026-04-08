@@ -487,26 +487,16 @@ def _render_unmarried_comparison(result: ComparisonResult):
 # ============================================================
 
 def _render_explanations():
-    """Tab 5: Berechnungsmethodik aus der README anzeigen."""
+    """Tab 5: Berechnungsmethodik aus der Dokumentation anzeigen."""
     st.subheader("Erklärungen zu Berechnung und Steuer")
 
-    readme_path = Path(__file__).with_name("README.md")
+    calculation_path = Path(__file__).resolve().parent / "docs" / "CALCULATION.md"
     try:
-        readme = readme_path.read_text(encoding="utf-8")
+        section = calculation_path.read_text(encoding="utf-8").strip()
     except OSError:
-        st.warning("Die README konnte nicht geladen werden.")
+        st.warning("Die Berechnungsdokumentation konnte nicht geladen werden.")
         return
 
-    start_marker = "## Berechnungsmethodik"
-    end_marker = "\n---\n\n## Technische Details"
-    start = readme.find(start_marker)
-    end = readme.find(end_marker, start)
-
-    if start == -1:
-        st.warning("Der README-Abschnitt zur Berechnungsmethodik wurde nicht gefunden.")
-        return
-
-    section = readme[start:end if end != -1 else None].strip()
     st.markdown(section)
 
 
