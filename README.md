@@ -57,60 +57,28 @@ docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 
 Die App ist dann unter `http://127.0.0.1:8501` erreichbar.
 
-### Docker Compose auf dem Server mit zentralem Caddy
+### Self-Hosting mit Caddy
 
-Auf dem Server sollte der Streamlit-Container **nicht direkt öffentlich exposed** werden. Nur der zentrale Caddy veröffentlicht `80/443`; die App hängt intern am externen Docker-Netzwerk `caddy` und ist dort für Caddy unter `steuerrechner:8501` erreichbar.
+Auf dem Server sollte der Streamlit-Container **nicht direkt öffentlich exposed** werden. Nur ein Reverse Proxy wie Caddy veröffentlicht `80/443`; die App hängt intern am externen Docker-Netzwerk `caddy` und ist dort für Caddy unter `steuerrechner:8501` erreichbar.
+
+Ein generisches Caddy-Beispiel liegt unter [examples/caddy](examples/caddy). Der komplette Ablauf ist in [docs/HOSTING.md](docs/HOSTING.md) dokumentiert.
+
+Kurzfassung:
 
 ```bash
-docker network create caddy
+docker network inspect caddy >/dev/null 2>&1 || docker network create caddy
+
+cd examples/caddy
+cp .env.example .env
+# .env bearbeiten: STEUERRECHNER_DOMAIN=deine-domain.de
+docker compose up -d
+cd ../..
+
 cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 ```
 
-Der zentrale Caddy-Stack läuft separat und ist der einzige Dienst mit öffentlichen Ports. Beispiel für dessen Compose-Datei:
-
-```yaml
-services:
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - caddy
-
-networks:
-  caddy:
-    external: true
-    name: ${CADDY_NETWORK:-caddy}
-
-volumes:
-  caddy_data:
-  caddy_config:
-```
-
-Im zentralen `Caddyfile`:
-
-```caddyfile
-steuerklassen-rechner.de {
-  encode zstd gzip
-  reverse_proxy steuerrechner:8501
-}
-```
-
-Wenn dein Caddy-Netzwerk anders heißt, setze denselben Namen in der Steuerrechner-`.env` und im Caddy-Stack:
-
-```dotenv
-CADDY_NETWORK=dein_caddy_netzwerk
-```
-
-Auf dem Server sollte `8501` nicht per `ports:` veröffentlicht und nicht in der Firewall freigegeben werden. Access-Logs in Caddy nur bewusst aktivieren und dann mit kurzer Aufbewahrung dokumentieren, weil IP-Adresse und User-Agent personenbezogene Daten sein können.
+Vor dem Caddy-Start muss die Domain per DNS auf den Server zeigen. Auf dem Server sollte `8501` nicht per `ports:` veröffentlicht und nicht in der Firewall freigegeben werden.
 
 ## Tests
 
@@ -148,7 +116,10 @@ Weitere Hinweise stehen in [CONTRIBUTING.md](CONTRIBUTING.md).
 ├── SECURITY.md                # Sicherheitskontakt und Meldeweg
 ├── .github/workflows/         # GitHub Actions für Tests
 ├── docs/
-│   └── CALCULATION.md         # Berechnungsmethodik und Annahmen
+│   ├── CALCULATION.md         # Berechnungsmethodik und Annahmen
+│   └── HOSTING.md             # Self-Hosting-Ablauf
+├── examples/
+│   └── caddy/                 # Generisches Caddy-Beispiel für Self-Hosting
 ├── engine/                    # Steuer-, Sozialversicherungs- und Vergleichslogik
 └── tests/
     └── test_engine.py         # Unit- und Integrationstests

@@ -1,0 +1,4 @@
+{$STEUERRECHNER_DOMAIN:steuerklassen-rechner.de} {
+	encode zstd gzip
+	reverse_proxy steuerrechner:8501
+}
