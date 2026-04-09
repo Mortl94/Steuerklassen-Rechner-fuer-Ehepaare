@@ -1,0 +1,4 @@
+services:
+  steuerrechner:
+    ports:
+      - "${STEUERRECHNER_BIND:-127.0.0.1}:${STEUERRECHNER_PORT:-8501}:8501"

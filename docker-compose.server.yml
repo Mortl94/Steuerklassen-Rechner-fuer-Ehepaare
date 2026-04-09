@@ -1,0 +1,11 @@
+services:
+  steuerrechner:
+    networks:
+      caddy:
+        aliases:
+          - steuerrechner
+
+networks:
+  caddy:
+    external: true
+    name: "${CADDY_NETWORK:-caddy}"

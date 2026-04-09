@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+.claude
+tests
+*.md
+!README.md
+!docs/
+!docs/CALCULATION.md
+.env
+.env.*
+docker-compose*.yml
+.pytest_cache
+.venv
+venv
